@@ -8,7 +8,6 @@ from collections import deque
 from math import tau
 
 import cv2
-import matplotlib.pyplot as plt
 import mss
 import mss.tools
 import numpy as np
@@ -124,7 +123,6 @@ def select_monitor(sct: MSSBase):
 
 DEFAULT_BROWSER_ARGS = {
     "chromium": [
-
         # Disable automation detection
         "--disable-blink-features=AutomationControlled",
         "--disable-infobars",
@@ -179,7 +177,7 @@ async def main():
     with mss.mss() as sct:
         async with async_playwright() as p:
             monitor = select_monitor(sct)
-            browser_type = "webkit"
+            browser_type = "chromium"
 
             browser = await {
                 "firefox": p.firefox,
