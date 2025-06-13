@@ -1,83 +1,21 @@
 #!/usr/bin/env python3
 
+import asyncio
+import sys
+import threading
 import time
 from collections import deque
 from math import tau
 
 import cv2
+import matplotlib.pyplot as plt
 import mss
 import mss.tools
 import numpy as np
-
-# 1. Verify server is reachable
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType
-
-# 2. Configure Chrome with essential flags
-chrome_options = Options()
-chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-chrome_options.add_experimental_option("useAutomationExtension", False)
-chrome_options.add_argument("--disable-dev-shm-usage")
-chrome_options.add_argument("--ignore-certificate-errors")
-chrome_options.add_argument("--allow-insecure-localhost")
-chrome_options.add_argument("--disable-web-security")
-chrome_options.add_argument("start-maximized")
-chrome_options.add_argument("disable-infobars")
-chrome_options.add_argument("--remote-debugging-port=9222")
-chrome_options.add_argument("--host-resolver-rules=MAP * 127.0.0.1")
-chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-
-
-# 3. Initialize driver with explicit service
-service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-driver = webdriver.Chrome(service=service, options=chrome_options)
-
-driver.maximize_window()
-driver.get("http://localhost:5000")
-size = driver.get_window_size()
-width = size["width"]
-height = size["height"]
-
-mx = 0.5 * (width - 1)
-my = 0.5 * (height - 1)
-x0 = 0.5 * width
-y0 = 0.5 * height
-
-canvas = driver.find_element("tag name", "canvas")
-
-driver.execute_script("""
-window.__moveCursorAbsolute = function(x, y) {
-    // Ensure coordinates are within viewport
-    x = Math.max(0, Math.min(x, window.innerWidth - 1));
-    y = Math.max(0, Math.min(y, window.innerHeight - 1));
-
-    // Get element at position
-    var element = document.elementFromPoint(x, y);
-    if (!element) element = document.body;
-
-    // Create and dispatch event
-    var event = new MouseEvent('mousemove', {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-        clientX: x,
-        clientY: y,
-        screenX: x + window.screenX,
-        screenY: y + window.screenY
-    });
-    element.dispatchEvent(event);
-};
-""")
-
-
-def move_to_position(x, y):
-    px = int(0.5 * (width - 1) * (x + 1))
-    py = int(0.5 * (height - 1) * (y + 1))
-    driver.execute_script(f"window.__moveCursorAbsolute({px}, {py});")
-
+from cv2.typing import MatLike
+from mss.base import MSSBase
+from playwright.__main__ import main as playwright_main
+from playwright.async_api import async_playwright
 
 f0 = 0.1
 N = int(1 / f0) + 1
@@ -94,80 +32,260 @@ FOURCC = cv2.VideoWriter_fourcc(*"mp4v")  # Use 'XVID' for AVI if needed
 
 t0 = time.perf_counter()
 frame_count = 0
-buffer = np.array(1)
 frames = deque()
 
+# Crop the region we record to reduce latency and processing work.
+WIDTH_CROP_RATIO = 0.2
+HEIGHT_CROP_RATIO = 0.1
 
-def main():
-    move_to_position(0, 0)
 
-    with mss.mss() as sct:
-        # Capture frame
-        bb = sct.monitors[1]
+def process_frames(frames: deque[MatLike]):
+    centers = np.empty(len(frames))
+    height, width = frames[0].shape[:2]
+    buffer = np.empty((height, width), dtype=np.uint8)
 
-        SCREENSHOT_REGION = {
-            "top": int(bb["top"] + bb["height"] * 0.55),
-            "left": int(bb["left"] + bb["width"] * 0.4),
-            "height": int(bb["height"] * 0.05),
-            "width": int(bb["width"] * 0.2),
-        }
+    for i, frame in enumerate(frames):
+        buffer[:] = frame[:, :, 0]
+        cv2.threshold(buffer, 200, 255, cv2.THRESH_BINARY, dst=buffer)
+        M = cv2.moments(buffer, binaryImage=True)
+        center_px = M["m10"] / M["m00"]
+        centers[i] = WIDTH_CROP_RATIO * (2 * center_px / width - 1)
 
-        # Capture frame
-        sct_img = sct.grab(SCREENSHOT_REGION)
+    np.savetxt("capture.npy", centers)
 
-        # Initialize VideoWriter for grayscale
-        out = cv2.VideoWriter(
-            filename=OUTPUT_FILE,
-            fourcc=FOURCC,
-            fps=FPS,
-            frameSize=(SCREENSHOT_REGION["width"], SCREENSHOT_REGION["height"]),
-            isColor=False,  # Critical for black & white output
+
+def ensure_browsers_installed():
+    sys.argv = ["", "install"]
+    playwright_main()
+
+
+def select_monitor(sct: MSSBase):
+    """
+    Displays labeled screenshots of several monitors. The user is
+    prompted to select one.
+    """
+    selected_monitor_index = 0
+
+    def get_monitor_selection():
+        nonlocal selected_monitor_index
+
+        while True:
+            print(
+                "Pick the monitor you will play the game on. Previews are "
+                f"shown above [1-{len(sct.monitors) - 1}]: ",
+                end="",
+            )
+            selection = input()
+
+            if len(selection) > 1:
+                print("Please input a monitor number.")
+                continue
+
+            if not selection.isdigit():
+                print("Please input a monitor number.")
+                continue
+
+            index = int(selection)
+            if index <= 0 or index >= len(sct.monitors):
+                print("Invalid monitor number.")
+                continue
+
+            selected_monitor_index = index
+
+            break
+
+    # Skip the first monitor as that's the whole screen (all monitors)
+    for i, monitor in enumerate(sct.monitors[1:]):
+        screenshot = np.array(sct.grab(monitor))
+
+        # Resize the screenshots to be smallish while maintaining aspect ratio
+        aspect_ratio = screenshot.shape[1] / screenshot.shape[0]
+        resize_height = 300
+        resize_width = int(resize_height * aspect_ratio)
+        cv2.imshow(
+            f"Monitor {i + 1}",
+            cv2.resize(
+                screenshot, (resize_width, resize_height), interpolation=cv2.INTER_AREA
+            ),
         )
 
-        scale = 0.1 / 0.6904998132600674
-        frame_count = 1
-        PRELOADED_FRAMES = 20
-        t0 = time.perf_counter()
-        try:
-            # Capture frames with precise timing
-            for _ in range(PRELOADED_FRAMES):
-                next_frame_time = (frame_count) / FPS
+    thread = threading.Thread(target=get_monitor_selection)
+    thread.start()
 
-                t = (frame_count - 1) / FPS
-                x = (scale * np.sin(w * t + phi)).sum() / N
-                move_to_position(x, 0)
+    # Keep the windows open until the monitor is selected
+    while selected_monitor_index == 0:
+        # sleep for 20 ms at a time by waiting for a key with timeout of 20 ms
+        cv2.waitKey(20)
 
-                frame_count += 1
+    cv2.destroyAllWindows()
 
-                while (time.perf_counter() - t0) < next_frame_time:
-                    pass
+    return sct.monitors[selected_monitor_index]
 
-            for _ in range(TOTAL_FRAMES + PRELOADED_FRAMES):
-                t = (frame_count - 1) / FPS
-                x = (scale * np.sin(w * t + phi)).sum() / N
-                move_to_position(x, 0)
 
-                # Capture frame
-                sct_img = sct.grab(SCREENSHOT_REGION)
+DEFAULT_BROWSER_ARGS = {
+    "chromium": [
 
-                # Convert to grayscale (direct conversion to 2D array)
-                frames.append(np.asarray(sct_img))
+        # Disable automation detection
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        # Performance and stability
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        # Privacy/security
+        "--disable-extensions",
+        "--disable-notifications",
+        "--disable-popup-blocking",
+        # UI/display
+        "--hide-scrollbars",
+        "--mute-audio",
+        # Misc
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-breakpad",
+        "--disable-client-side-phishing-detection",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-default-apps",
+        "--disable-hang-monitor",
+        "--disable-ipc-flooding-protection",
+        "--disable-renderer-backgrounding",
+        "--disable-sync",
+        "--metrics-recording-only",
+        "--no-first-run",
+        "--password-store=basic",
+        "--use-mock-keychain",
+    ],
+    "firefox": [
+        # Privacy/security
+        "--no-remote",
+        "--disable-extensions",
+        "--disable-default-apps",
+        "--disable-popup-blocking",
+        # Performance
+        "--disable-gpu",
+        # Automation stealth
+        "--disable-browser-side-navigation",
+        "--disable-web-security",
+        # UI/display
+        "--hide-scrollbars",
+        "--mute-audio",
+    ],
+    "webkit": [],
+}
 
-                # Write frame
-                frame_count += 1
 
-                # Maintain precise FPS
-                next_frame_time = (frame_count) / FPS
-                while (time.perf_counter() - t0) < next_frame_time:
-                    pass
+async def main():
+    dt = deque()
+    with mss.mss() as sct:
+        async with async_playwright() as p:
+            monitor = select_monitor(sct)
+            browser_type = "webkit"
 
-            for frame in frames:
-                out.write(cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY))
-        finally:
-            # Cleanup resources
-            out.release()
-            print(f"Saved {TOTAL_FRAMES} grayscale frames to {OUTPUT_FILE}")
+            browser = await {
+                "firefox": p.firefox,
+                "webkit": p.webkit,
+                "chromium": p.chromium,
+            }.get(browser_type, p.chromium).launch(
+                headless=False,
+                args=DEFAULT_BROWSER_ARGS[browser_type],
+            )
+            context = await browser.new_context(no_viewport=True)
+
+            page = await context.new_page()
+            viewport = await page.evaluate(""" () => ({
+                width: window.screen.width,
+                height: window.screen.height
+            });""")
+
+            await page.close()
+
+            context = await browser.new_context(
+                viewport=viewport, device_scale_factor=1
+            )
+
+            # Create initial page
+            page = await context.new_page()
+
+            await page.goto("http://localhost:5000")
+
+            async def move_mouse(x, y):
+                px = 0.5 * (viewport["width"] - 1) * (x + 1)
+                py = 0.5 * (viewport["height"] - 1) * (y + 1)
+                # await page.mouse.move(px, py)
+                await page.evaluate(
+                    """([px, py]) => {
+                     document.dispatchEvent(
+                         new MouseEvent('mousemove', {
+                             clientX: px,
+                             clientY: py,
+                             bubbles: true,
+                             cancelable: true,
+                         })
+                     );
+                 }""",
+                    [px, py],
+                )
+
+            SCREENSHOT_REGION = {
+                "top": int(monitor["top"] + monitor["height"] * 0.575),
+                "left": int(monitor["left"] + monitor["width"] * 0.405),
+                "height": int(monitor["height"] * 0.05),
+                "width": int(monitor["width"] * 0.2),
+            }
+
+            scale = 0.1 / 0.6904998132600674
+            frame_count = 1
+            PRELOADED_FRAMES = 20
+            t0 = time.perf_counter()
+            try:
+                # Capture frames with precise timing
+                for _ in range(PRELOADED_FRAMES):
+                    next_frame_time = (frame_count) / FPS
+
+                    t = (frame_count - 1) / FPS
+                    x = (scale * np.sin(w * t + phi)).sum() / N
+                    await move_mouse(x, 0)
+
+                    frame_count += 1
+
+                    while (time.perf_counter() - t0) < next_frame_time:
+                        await asyncio.sleep(0)
+                        pass
+
+                t1 = 0
+                for _ in range(TOTAL_FRAMES):
+                    if t1 != 0:
+                        dt.append(time.perf_counter() - t1)
+                    t1 = time.perf_counter()
+
+                    t = (frame_count - 1) / FPS
+                    x = (scale * np.sin(w * t + phi)).sum() / N
+                    await move_mouse(x, 0)
+
+                    # Capture frame
+                    frames.append(np.asarray(sct.grab(SCREENSHOT_REGION)))
+
+                    frame_count += 1
+
+                    # Maintain precise FPS
+                    next_frame_time = (frame_count) / FPS
+                    while (time.perf_counter() - t0) < next_frame_time:
+                        # This is a trick. Sleeps/waits will always yield
+                        # control, even if the value is 0.
+                        # This yields control back to the browser for one
+                        # update cycle to allow it to continue working.
+                        await asyncio.sleep(0)
+                        # pass
+
+            finally:
+                # input()
+                # Cleanup resources
+                await browser.close()
+                print(f"Saved {TOTAL_FRAMES} grayscale frames to {OUTPUT_FILE}")
+
+    process_frames(frames)
+    np.savetxt("dt.npy", dt)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

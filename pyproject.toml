@@ -5,11 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 dependencies = [
     "flask>=3.1.1",
+    "matplotlib>=3.10.3",
     "mouse>=0.7.1",
     "mss>=10.0.0",
     "numpy>=2.2.6",
     "opencv-python>=4.11.0.86",
     "pillow>=11.2.1",
+    "playwright>=1.52.0",
+    "pyqt5>=5.15.11",
+    "screeninfo>=0.8.1",
     "selenium>=4.33.0",
     "webdriver-manager>=4.0.2",
 ]
