@@ -198,7 +198,7 @@ def select_browser() -> str:
         print(
             textwrap.dedent("""
             Which browser type will you be playing on?
-            [1] Chromium (Edge, Chrome, Brave)
+            [1] Chromium (Chrome, Edge, Brave, Opera)
             [2] Apple Webkit (Safari)
             [3] Firefox
             Your choice [1-3]: """),
@@ -340,6 +340,8 @@ async def main():
                 await browser.close()
 
     process_frames(frames)
+    np.savetxt("dt.npy", dt)
+    print(np.mean(dt))
 
 
 if __name__ == "__main__":
