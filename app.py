@@ -254,7 +254,7 @@ async def main():
 
             # Create initial page
             page = await context.new_page()
-            await page.goto("http://localhost:5000")
+            await page.goto("http://ec2-54-89-127-81.compute-1.amazonaws.com")
             cdp_session = None
 
             try:
@@ -296,6 +296,7 @@ async def main():
                 "width": int(monitor["width"] * WIDTH_CROP_RATIO),
             }
 
+            await asyncio.sleep(1)
             frame_count = 1
             t0 = time.perf_counter()
             try:
