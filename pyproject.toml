@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "pillow>=11.2.1",
     "playwright>=1.52.0",
+    "scipy>=1.15.3",
     "screeninfo>=0.8.1",
     "webdriver-manager>=4.0.2",
 ]
@@ -111,5 +112,6 @@ dev-dependencies = [
     "ipykernel>=6.29.5",
     "mypy>=1.15.0",
     "mypy-protobuf>=3.6.0",
+    "pyinstaller>=6.14.1",
     "ruff>=0.11.4",
 ]
