@@ -191,6 +191,7 @@ def main():
                     SCREENSHOT_REGION["left"] += 5
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
+            print(frame.shape)
 
             frame = cv2.rectangle(
                 frame,
