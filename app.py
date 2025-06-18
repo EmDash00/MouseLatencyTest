@@ -186,7 +186,7 @@ def main():
                 case Keys.LEFT | Keys.A:
                     SCREENSHOT_REGION["left"] -= 2
                 case Keys.RIGHT | Keys.D:
-                    SCREENSHOT_REGION["top"] += 2
+                    SCREENSHOT_REGION["left"] += 2
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
 
