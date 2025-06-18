@@ -31,6 +31,10 @@ PRELOADED_FRAMES = 20
 
 class Keys(IntEnum):
     Q = ord("q")
+    W = ord("w")
+    A = ord("a")
+    S = ord("s")
+    D = ord("d")
     ENTER = 13
     UP = 82
     DOWN = 84
@@ -175,13 +179,13 @@ def main():
                 case Keys.ENTER:
                     cv2.destroyAllWindows()
                     break
-                case Keys.UP:
+                case Keys.UP | Keys.W:
                     SCREENSHOT_REGION["top"] -= 2
-                case Keys.DOWN:
+                case Keys.DOWN | Keys.S:
                     SCREENSHOT_REGION["top"] += 2
-                case Keys.LEFT:
+                case Keys.LEFT | Keys.A:
                     SCREENSHOT_REGION["left"] -= 2
-                case Keys.RIGHT:
+                case Keys.RIGHT | Keys.D:
                     SCREENSHOT_REGION["top"] += 2
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
