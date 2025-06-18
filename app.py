@@ -5,15 +5,18 @@ import textwrap
 import threading
 import time
 from collections import deque
+from enum import IntEnum
 from math import tau
 
 import cv2
 import mss
 import mss.tools
 import numpy as np
+import pyautogui
 from cv2.typing import MatLike
 from mss.base import MSSBase
-from playwright.async_api import async_playwright
+from mss.models import Monitor
+from playwright.async_api import Page, async_playwright
 from scipy.fft import rfft, rfftfreq
 
 from util import find_closest
@@ -25,6 +28,15 @@ phi = np.linspace(0, 0.25 * tau, N)
 scale = 0.1 / 0.6904998132600674
 frame_count = 1
 PRELOADED_FRAMES = 20
+
+
+class Keys(IntEnum):
+    Q = ord("q")
+    ENTER = 13
+    UP = 82
+    DOWN = 84
+    LEFT = 81
+    RIGHT = 83
 
 
 # Configuration
@@ -46,7 +58,46 @@ frames = deque()
 
 # Crop the region we record to reduce latency and processing work.
 WIDTH_CROP_RATIO = 0.2
-HEIGHT_CROP_RATIO = 0.05
+HEIGHT_CROP_RATIO = 0.0125
+
+
+async def activate_fullscreen(page: Page):
+    # Create a transparent button for user gesture
+    await page.evaluate("""() => {
+        const btn = document.createElement('button');
+        btn.id = '__fullscreen_trigger';
+        btn.style.position = 'fixed';
+        btn.style.top = '0';
+        btn.style.left = '0';
+        btn.style.opacity = '0';
+        btn.style.zIndex = '9999';
+        document.body.appendChild(btn);
+    }""")
+
+    # Click the button to establish user context
+    await page.click("#__fullscreen_trigger")
+
+    # Activate fullscreen on document element
+    await page.evaluate("""() => {
+        const elem = document.documentElement;
+        const requestFullscreen =
+            elem.requestFullscreen ||
+            elem.mozRequestFullScreen ||
+            elem.webkitRequestFullscreen ||
+            elem.msRequestFullscreen;
+
+        if (requestFullscreen) {
+            requestFullscreen.call(elem).catch(e => console.log(e));
+            return true;
+        }
+        return false;
+    }""")
+
+    # Clean up the trigger button
+    await page.evaluate("""() => {
+        const btn = document.getElementById('__fullscreen_trigger');
+        btn?.parentNode?.removeChild(btn);
+    }""")
 
 
 def process_frames(frames: deque[MatLike]):
@@ -74,7 +125,7 @@ def process_frames(frames: deque[MatLike]):
     np.savetxt("capture.npy", centers)
 
 
-def select_monitor(sct: MSSBase):
+def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
     """
     Displays labeled screenshots of several monitors. The user is
     prompted to select one.
@@ -134,7 +185,7 @@ def select_monitor(sct: MSSBase):
 
     cv2.destroyAllWindows()
 
-    return sct.monitors[selected_monitor_index]
+    return selected_monitor_index, sct.monitors[selected_monitor_index]
 
 
 DEFAULT_BROWSER_ARGS = {
@@ -146,9 +197,15 @@ DEFAULT_BROWSER_ARGS = {
         "--disable-dev-shm-usage",
         "--disable-gpu",
         # Privacy/security
+        "--ignore-certificate-errors",  # Bypass HTTPS errors
+        "--unsafely-treat-insecure-origin-as-secure=http://localhost:5000",  # Treat HTTP as secure
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-web-security",  # Disable CORS & other security policies
+        "--allow-running-insecure-content",  # Allow mixed content
         "--disable-extensions",
         "--disable-notifications",
         "--disable-popup-blocking",
+        "--disable-web-security",
         # UI/display
         "--hide-scrollbars",
         "--mute-audio",
@@ -227,7 +284,7 @@ async def main():
     dt = deque()
     with mss.mss() as sct:
         async with async_playwright() as p:
-            monitor = select_monitor(sct)
+            monitor_idx, monitor = select_monitor(sct)
             browser_type = select_browser()
 
             browser = await {
@@ -245,58 +302,69 @@ async def main():
                 width: window.screen.width,
                 height: window.screen.height
             });""")
-
             await page.close()
 
-            context = await browser.new_context(
-                viewport=viewport, device_scale_factor=1
-            )
+            context = await browser.new_context(viewport=viewport)
+            page = await context.new_page()
+
+            print("Monitor information: ", monitor)
+            print("Calculated real screen resolution: ", viewport)
 
             # Create initial page
-            page = await context.new_page()
-            await page.goto("http://ec2-54-89-127-81.compute-1.amazonaws.com")
-            cdp_session = None
-
-            try:
-                cdp_session = await context.new_cdp_session(page)
-            except Exception:
-                pass
+            await page.goto("http://localhost:5000")
+            await page.wait_for_timeout(1)
+            await activate_fullscreen(page)
 
             async def move_mouse(x, y):
-                px = 0.5 * (viewport["width"] - 1) * (x + 1)
-                py = 0.5 * (viewport["height"] - 1) * (y + 1)
-
-                if cdp_session is not None:
-                    await cdp_session.send('Input.dispatchMouseEvent', {
-                        'type': 'mouseMoved',
-                        'x': px,
-                        'y': py
-                    })
-                    return
-
-
-                await page.evaluate(
-                    """([px, py]) => {
-                     document.dispatchEvent(
-                         new MouseEvent('mousemove', {
-                             clientX: px,
-                             clientY: py,
-                             bubbles: true,
-                             cancelable: true,
-                         })
-                     );
-                 }""",
-                    [px, py],
-                )
+                px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
+                py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
+                pyautogui.moveTo(px, py, _pause=False)
 
             SCREENSHOT_REGION = {
-                "top": int(monitor["top"] + monitor["height"] * 0.575),
-                "left": int(monitor["left"] + monitor["width"] * 0.405),
+                "top": int(
+                    monitor["top"] + monitor["height"] * 0.5 * (1 - HEIGHT_CROP_RATIO)
+                ),
+                "left": int(
+                    monitor["left"] + monitor["width"] * 0.5 * (1 - WIDTH_CROP_RATIO)
+                ),
                 "height": int(monitor["height"] * HEIGHT_CROP_RATIO),
                 "width": int(monitor["width"] * WIDTH_CROP_RATIO),
             }
 
-            await asyncio.sleep(1)
+            while True:
+                match cv2.waitKey(40) & 0xFF:
+                    case Keys.ENTER:
+                        cv2.destroyAllWindows()
+                        break
+                    case Keys.UP:
+                        SCREENSHOT_REGION["top"] -= 5
+                        print(SCREENSHOT_REGION["top"] / monitor["height"])
+                    case Keys.DOWN:
+                        SCREENSHOT_REGION["top"] += 5
+                        print(SCREENSHOT_REGION["top"] / monitor["height"])
+                    case Keys.LEFT:
+                        SCREENSHOT_REGION["left"] -= 5
+                        print(SCREENSHOT_REGION["left"] / monitor["width"])
+                    case Keys.RIGHT:
+                        SCREENSHOT_REGION["top"] += 5
+                        print(SCREENSHOT_REGION["left"] / monitor["width"])
+
+                frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
+
+                frame = cv2.rectangle(
+                    frame,
+                    (SCREENSHOT_REGION["left"], SCREENSHOT_REGION["top"]),
+                    (
+                        SCREENSHOT_REGION["left"] + SCREENSHOT_REGION["width"],
+                        SCREENSHOT_REGION["top"] + SCREENSHOT_REGION["height"],
+                    ),
+                    (0, 0, 255),
+                    2,
+                )
+
+                frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+                cv2.imshow("PREVIEW", frame)
+
             frame_count = 1
             t0 = time.perf_counter()
             try:
