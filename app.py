@@ -183,7 +183,8 @@ def main():
         }
 
         frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
-        display_scale = frame.shape[0] / monitor["width"]
+        display_scale = frame.shape[1] / monitor["width"]
+        print(display_scale)
         while True:
             match cv2.waitKey(40) & 0xFF:
                 case Keys.ENTER:
@@ -198,7 +199,6 @@ def main():
                     SCREENSHOT_REGION["left"] += 5
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
-            print(frame.shape)
 
             frame = cv2.rectangle(
                 frame,
