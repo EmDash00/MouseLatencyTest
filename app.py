@@ -212,7 +212,7 @@ def main():
             ratio = monitor["height"] / monitor["width"]
             frame = cv2.resize(
                 frame,
-                (600, int(600 * ratio)),
+                (800, int(800 * ratio)),
                 interpolation=cv2.INTER_AREA,
             )
             cv2.imshow("Preview", frame)
