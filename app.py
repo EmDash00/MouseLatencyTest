@@ -157,6 +157,7 @@ def main():
     dt2 = deque()
     with mss.mss() as sct:
         monitor_idx, monitor = select_monitor(sct)
+        print("Calculated resolution:", monitor)
 
         def move_mouse(x, y):
             px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
@@ -200,7 +201,11 @@ def main():
                 2,
             )
 
-            frame = cv2.resize(frame, (400, 240), interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(
+                frame,
+                (int(monitor["width"] * 0.25), int(monitor["height"] * 0.25)),
+                interpolation=cv2.INTER_AREA,
+            )
             cv2.imshow("PREVIEW", frame)
         cv2.destroyAllWindows()
 
