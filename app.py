@@ -182,6 +182,8 @@ def main():
             "width": int(monitor["width"] * WIDTH_CROP_RATIO),
         }
 
+        frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
+        display_scale = frame.shape[0] / monitor["width"]
         while True:
             match cv2.waitKey(40) & 0xFF:
                 case Keys.ENTER:
@@ -200,10 +202,19 @@ def main():
 
             frame = cv2.rectangle(
                 frame,
-                (SCREENSHOT_REGION["left"], SCREENSHOT_REGION["top"]),
                 (
-                    SCREENSHOT_REGION["left"] + SCREENSHOT_REGION["width"],
-                    SCREENSHOT_REGION["top"] + SCREENSHOT_REGION["height"],
+                    int(SCREENSHOT_REGION["left"] * display_scale),
+                    int(SCREENSHOT_REGION["top"] * display_scale),
+                ),
+                (
+                    int(
+                        display_scale
+                        * (SCREENSHOT_REGION["left"] + SCREENSHOT_REGION["width"])
+                    ),
+                    int(
+                        display_scale
+                        * (SCREENSHOT_REGION["top"] + SCREENSHOT_REGION["height"])
+                    ),
                 ),
                 (0, 0, 255),
                 2,
@@ -212,7 +223,7 @@ def main():
             ratio = monitor["height"] / monitor["width"]
             frame = cv2.resize(
                 frame,
-                (800, int(800 * ratio)),
+                (600, int(600 * ratio)),
                 interpolation=cv2.INTER_AREA,
             )
             cv2.imshow("Preview", frame)
