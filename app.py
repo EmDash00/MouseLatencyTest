@@ -124,6 +124,9 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
 
             break
 
+    if len(sct.monitors) == 2:
+        return 1, sct.monitors[1]
+
     # Skip the first monitor as that's the whole screen (all monitors)
     for i, monitor in enumerate(sct.monitors[1:]):
         screenshot = np.array(sct.grab(monitor))
@@ -154,7 +157,6 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
 
 def main():
     dt = deque()
-    dt2 = deque()
     with mss.mss() as sct:
         monitor_idx, monitor = select_monitor(sct)
         print("Calculated resolution:", monitor)
@@ -180,13 +182,13 @@ def main():
                 case Keys.ENTER:
                     break
                 case Keys.UP | Keys.W:
-                    SCREENSHOT_REGION["top"] -= 2
+                    SCREENSHOT_REGION["top"] -= 5
                 case Keys.DOWN | Keys.S:
-                    SCREENSHOT_REGION["top"] += 2
+                    SCREENSHOT_REGION["top"] += 5
                 case Keys.LEFT | Keys.A:
-                    SCREENSHOT_REGION["left"] -= 2
+                    SCREENSHOT_REGION["left"] -= 5
                 case Keys.RIGHT | Keys.D:
-                    SCREENSHOT_REGION["left"] += 2
+                    SCREENSHOT_REGION["left"] += 5
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
 
@@ -203,7 +205,7 @@ def main():
 
             frame = cv2.resize(
                 frame,
-                (int(monitor["width"] * 0.25), int(monitor["height"] * 0.25)),
+                (int(monitor["width"] * 0.33), int(monitor["height"] * 0.33)),
                 interpolation=cv2.INTER_AREA,
             )
             cv2.imshow("PREVIEW", frame)
