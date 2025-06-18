@@ -24,7 +24,7 @@ f0 = 0.1
 N = int(1 / f0) + 1
 w = np.arange(N) * f0 * tau
 phi = np.linspace(0, 0.25 * tau, N)
-scale = 0.1 / 0.6904998132600674
+scale = 0.03 / 0.6904998132600674
 frame_count = 1
 PRELOADED_FRAMES = 20
 
@@ -56,17 +56,17 @@ frame_count = 0
 frames = deque()
 
 # Crop the region we record to reduce latency and processing work.
-WIDTH_CROP_RATIO = 0.2
-HEIGHT_CROP_RATIO = 0.0125
+WIDTH_CROP_RATIO = 0.031
+HEIGHT_CROP_RATIO = 0.011
 
 
 def process_frames(frames: deque[MatLike]):
     centers = np.empty(len(frames))
-    height, width = frames[0].shape[:2]
+    height, width = np.asarray(frames[0]).shape[:2]
     buffer = np.empty((height, width), dtype=np.uint8)
 
     for i, frame in enumerate(frames):
-        buffer[:] = frame[:, :, 0]
+        buffer[:] = np.asarray(frame)[:, :, 0]
         cv2.threshold(buffer, 200, 255, cv2.THRESH_BINARY, dst=buffer)
         M = cv2.moments(buffer, binaryImage=True)
         center_px = M["m10"] / M["m00"]
@@ -81,7 +81,7 @@ def process_frames(frames: deque[MatLike]):
         H_yu_phase.var() * (H_yu_phase.size - 1)
     )
 
-    print(f"Calculated group delay: {-group_delay:.3f} seconds (r^2 = {r_squared:.3f})")
+    print(f"Calculated group delay: {-group_delay:.6f} seconds (r^2 = {r_squared:.6f})")
     np.savetxt("capture.npy", centers)
 
 
@@ -150,6 +150,7 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
 
 def main():
     dt = deque()
+    dt2 = deque()
     with mss.mss() as sct:
         monitor_idx, monitor = select_monitor(sct)
 
@@ -175,17 +176,13 @@ def main():
                     cv2.destroyAllWindows()
                     break
                 case Keys.UP:
-                    SCREENSHOT_REGION["top"] -= 5
-                    print(SCREENSHOT_REGION["top"] / monitor["height"])
+                    SCREENSHOT_REGION["top"] -= 2
                 case Keys.DOWN:
-                    SCREENSHOT_REGION["top"] += 5
-                    print(SCREENSHOT_REGION["top"] / monitor["height"])
+                    SCREENSHOT_REGION["top"] += 2
                 case Keys.LEFT:
-                    SCREENSHOT_REGION["left"] -= 5
-                    print(SCREENSHOT_REGION["left"] / monitor["width"])
+                    SCREENSHOT_REGION["left"] -= 2
                 case Keys.RIGHT:
-                    SCREENSHOT_REGION["top"] += 5
-                    print(SCREENSHOT_REGION["left"] / monitor["width"])
+                    SCREENSHOT_REGION["top"] += 2
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
 
@@ -200,7 +197,7 @@ def main():
                 2,
             )
 
-            frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(frame, (400, 240), interpolation=cv2.INTER_AREA)
             cv2.imshow("PREVIEW", frame)
 
         frame_count = 1
@@ -216,27 +213,26 @@ def main():
             frame_count += 1
 
             while (time.perf_counter() - t0) < next_frame_time:
-                time.sleep(0)
+                pass
 
         t1 = 0
         for _ in range(TOTAL_FRAMES):
-            if t1 != 0:
-                dt.append(time.perf_counter() - t1)
             t1 = time.perf_counter()
-
             t = (frame_count - 1) / FPS
             x = (scale * np.sin(w * t + phi)).sum() / N
+
             move_mouse(x, 0)
 
             # Capture frame
-            frames.append(np.asarray(sct.grab(SCREENSHOT_REGION)))
+            frames.append(sct.grab(SCREENSHOT_REGION))
 
             frame_count += 1
 
+            dt.append(time.perf_counter() - t1)
             # Maintain precise FPS
-            next_frame_time = (frame_count) / FPS
+            next_frame_time = frame_count / FPS
             while (time.perf_counter() - t0) < next_frame_time:
-                time.sleep(0)
+                pass
 
     process_frames(frames)
     np.savetxt("dt.npy", dt)
