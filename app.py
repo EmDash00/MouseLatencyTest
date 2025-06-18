@@ -177,7 +177,6 @@ def main():
         while True:
             match cv2.waitKey(40) & 0xFF:
                 case Keys.ENTER:
-                    cv2.destroyAllWindows()
                     break
                 case Keys.UP | Keys.W:
                     SCREENSHOT_REGION["top"] -= 2
@@ -203,6 +202,7 @@ def main():
 
             frame = cv2.resize(frame, (400, 240), interpolation=cv2.INTER_AREA)
             cv2.imshow("PREVIEW", frame)
+        cv2.destroyAllWindows()
 
         frame_count = 1
         t0 = time.perf_counter()
