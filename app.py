@@ -161,6 +161,11 @@ def main():
         monitor_idx, monitor = select_monitor(sct)
         print("Calculated resolution:", monitor)
 
+        def click_mouse(x, y):
+            px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
+            py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
+            pyautogui.click(px, py)
+
         def move_mouse(x, y):
             px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
             py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
@@ -204,17 +209,21 @@ def main():
                 2,
             )
 
+            ratio = monitor["height"] / monitor["width"]
             frame = cv2.resize(
                 frame,
-                (int(monitor["width"] * 0.33), int(monitor["height"] * 0.33)),
+                (600, int(600 * ratio)),
                 interpolation=cv2.INTER_AREA,
             )
-            cv2.imshow("PREVIEW", frame)
-        cv2.destroyAllWindows()
+            cv2.imshow("Preview", frame)
+
+        cv2.destroyWindow("Preview")
+        click_mouse(0, 0)
 
         frame_count = 1
         t0 = time.perf_counter()
         # Capture frames with precise timing
+
         for _ in range(PRELOADED_FRAMES):
             next_frame_time = (frame_count) / FPS
 
@@ -247,6 +256,7 @@ def main():
                 pass
 
     process_frames(frames)
+    print(np.mean(dt))
     np.savetxt("dt.npy", dt)
 
 
