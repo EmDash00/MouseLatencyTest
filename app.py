@@ -16,7 +16,6 @@ import pyautogui
 from cv2.typing import MatLike
 from mss.base import MSSBase
 from mss.models import Monitor
-from playwright.async_api import Page, async_playwright
 from scipy.fft import rfft, rfftfreq
 
 from util import find_closest
@@ -59,45 +58,6 @@ frames = deque()
 # Crop the region we record to reduce latency and processing work.
 WIDTH_CROP_RATIO = 0.2
 HEIGHT_CROP_RATIO = 0.0125
-
-
-async def activate_fullscreen(page: Page):
-    # Create a transparent button for user gesture
-    await page.evaluate("""() => {
-        const btn = document.createElement('button');
-        btn.id = '__fullscreen_trigger';
-        btn.style.position = 'fixed';
-        btn.style.top = '0';
-        btn.style.left = '0';
-        btn.style.opacity = '0';
-        btn.style.zIndex = '9999';
-        document.body.appendChild(btn);
-    }""")
-
-    # Click the button to establish user context
-    await page.click("#__fullscreen_trigger")
-
-    # Activate fullscreen on document element
-    await page.evaluate("""() => {
-        const elem = document.documentElement;
-        const requestFullscreen =
-            elem.requestFullscreen ||
-            elem.mozRequestFullScreen ||
-            elem.webkitRequestFullscreen ||
-            elem.msRequestFullscreen;
-
-        if (requestFullscreen) {
-            requestFullscreen.call(elem).catch(e => console.log(e));
-            return true;
-        }
-        return false;
-    }""")
-
-    # Clean up the trigger button
-    await page.evaluate("""() => {
-        const btn = document.getElementById('__fullscreen_trigger');
-        btn?.parentNode?.removeChild(btn);
-    }""")
 
 
 def process_frames(frames: deque[MatLike]):
@@ -188,230 +148,99 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
     return selected_monitor_index, sct.monitors[selected_monitor_index]
 
 
-DEFAULT_BROWSER_ARGS = {
-    "chromium": [
-        # Disable automation detection
-        "--disable-blink-features=AutomationControlled",
-        "--disable-infobars",
-        # Performance and stability
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        # Privacy/security
-        "--ignore-certificate-errors",  # Bypass HTTPS errors
-        "--unsafely-treat-insecure-origin-as-secure=http://localhost:5000",  # Treat HTTP as secure
-        "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-web-security",  # Disable CORS & other security policies
-        "--allow-running-insecure-content",  # Allow mixed content
-        "--disable-extensions",
-        "--disable-notifications",
-        "--disable-popup-blocking",
-        "--disable-web-security",
-        # UI/display
-        "--hide-scrollbars",
-        "--mute-audio",
-        # Misc
-        "--disable-background-networking",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-breakpad",
-        "--disable-client-side-phishing-detection",
-        "--disable-component-extensions-with-background-pages",
-        "--disable-default-apps",
-        "--disable-hang-monitor",
-        "--disable-ipc-flooding-protection",
-        "--disable-renderer-backgrounding",
-        "--disable-sync",
-        "--metrics-recording-only",
-        "--no-first-run",
-        "--password-store=basic",
-        "--use-mock-keychain",
-    ],
-    "firefox": [
-        # Privacy/security
-        "--no-remote",
-        "--disable-extensions",
-        "--disable-default-apps",
-        "--disable-popup-blocking",
-        # Performance
-        "--disable-gpu",
-        # Automation stealth
-        "--disable-browser-side-navigation",
-        "--disable-web-security",
-        # UI/display
-        "--hide-scrollbars",
-        "--mute-audio",
-    ],
-    "webkit": [],
-}
-
-
-def select_browser() -> str:
-    selection_list = [
-        "chromium",
-        "webkit",
-        "firefox",
-    ]
-    while True:
-        print(
-            textwrap.dedent("""
-            Which browser type will you be playing on?
-            [1] Chromium (Chrome, Edge, Brave, Opera)
-            [2] Apple Webkit (Safari)
-            [3] Firefox
-            Your choice [1-3]: """),
-            end="",
-        )
-        selection = input()
-
-        if len(selection) != 1:
-            print("Selection should be a single digit.")
-            continue
-
-        if not selection[0].isdigit():
-            print("Selection should be a single digit.")
-            continue
-
-        index = int(selection)
-
-        if not (index >= 1 and index <= 3):
-            print("Selection should be a number [1-3].")
-            continue
-
-        return selection_list[index - 1]
-
-
-async def main():
+def main():
     dt = deque()
     with mss.mss() as sct:
-        async with async_playwright() as p:
-            monitor_idx, monitor = select_monitor(sct)
-            browser_type = select_browser()
+        monitor_idx, monitor = select_monitor(sct)
 
-            browser = await {
-                "firefox": p.firefox,
-                "webkit": p.webkit,
-                "chromium": p.chromium,
-            }.get(browser_type, p.chromium).launch(
-                headless=False,
-                args=DEFAULT_BROWSER_ARGS[browser_type],
+        def move_mouse(x, y):
+            px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
+            py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
+            pyautogui.moveTo(px, py, _pause=False)
+
+        SCREENSHOT_REGION = {
+            "top": int(
+                monitor["top"] + monitor["height"] * 0.5 * (1 - HEIGHT_CROP_RATIO)
+            ),
+            "left": int(
+                monitor["left"] + monitor["width"] * 0.5 * (1 - WIDTH_CROP_RATIO)
+            ),
+            "height": int(monitor["height"] * HEIGHT_CROP_RATIO),
+            "width": int(monitor["width"] * WIDTH_CROP_RATIO),
+        }
+
+        while True:
+            match cv2.waitKey(40) & 0xFF:
+                case Keys.ENTER:
+                    cv2.destroyAllWindows()
+                    break
+                case Keys.UP:
+                    SCREENSHOT_REGION["top"] -= 5
+                    print(SCREENSHOT_REGION["top"] / monitor["height"])
+                case Keys.DOWN:
+                    SCREENSHOT_REGION["top"] += 5
+                    print(SCREENSHOT_REGION["top"] / monitor["height"])
+                case Keys.LEFT:
+                    SCREENSHOT_REGION["left"] -= 5
+                    print(SCREENSHOT_REGION["left"] / monitor["width"])
+                case Keys.RIGHT:
+                    SCREENSHOT_REGION["top"] += 5
+                    print(SCREENSHOT_REGION["left"] / monitor["width"])
+
+            frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
+
+            frame = cv2.rectangle(
+                frame,
+                (SCREENSHOT_REGION["left"], SCREENSHOT_REGION["top"]),
+                (
+                    SCREENSHOT_REGION["left"] + SCREENSHOT_REGION["width"],
+                    SCREENSHOT_REGION["top"] + SCREENSHOT_REGION["height"],
+                ),
+                (0, 0, 255),
+                2,
             )
-            context = await browser.new_context(no_viewport=True)
 
-            page = await context.new_page()
-            viewport = await page.evaluate(""" () => ({
-                width: window.screen.width,
-                height: window.screen.height
-            });""")
-            await page.close()
+            frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+            cv2.imshow("PREVIEW", frame)
 
-            context = await browser.new_context(viewport=viewport)
-            page = await context.new_page()
+        frame_count = 1
+        t0 = time.perf_counter()
+        # Capture frames with precise timing
+        for _ in range(PRELOADED_FRAMES):
+            next_frame_time = (frame_count) / FPS
 
-            print("Monitor information: ", monitor)
-            print("Calculated real screen resolution: ", viewport)
+            t = (frame_count - 1) / FPS
+            x = (scale * np.sin(w * t + phi)).sum() / N
+            move_mouse(x, 0)
 
-            # Create initial page
-            await page.goto("http://localhost:5000")
-            await page.wait_for_timeout(1)
-            await activate_fullscreen(page)
+            frame_count += 1
 
-            async def move_mouse(x, y):
-                px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
-                py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
-                pyautogui.moveTo(px, py, _pause=False)
+            while (time.perf_counter() - t0) < next_frame_time:
+                time.sleep(0)
 
-            SCREENSHOT_REGION = {
-                "top": int(
-                    monitor["top"] + monitor["height"] * 0.5 * (1 - HEIGHT_CROP_RATIO)
-                ),
-                "left": int(
-                    monitor["left"] + monitor["width"] * 0.5 * (1 - WIDTH_CROP_RATIO)
-                ),
-                "height": int(monitor["height"] * HEIGHT_CROP_RATIO),
-                "width": int(monitor["width"] * WIDTH_CROP_RATIO),
-            }
+        t1 = 0
+        for _ in range(TOTAL_FRAMES):
+            if t1 != 0:
+                dt.append(time.perf_counter() - t1)
+            t1 = time.perf_counter()
 
-            while True:
-                match cv2.waitKey(40) & 0xFF:
-                    case Keys.ENTER:
-                        cv2.destroyAllWindows()
-                        break
-                    case Keys.UP:
-                        SCREENSHOT_REGION["top"] -= 5
-                        print(SCREENSHOT_REGION["top"] / monitor["height"])
-                    case Keys.DOWN:
-                        SCREENSHOT_REGION["top"] += 5
-                        print(SCREENSHOT_REGION["top"] / monitor["height"])
-                    case Keys.LEFT:
-                        SCREENSHOT_REGION["left"] -= 5
-                        print(SCREENSHOT_REGION["left"] / monitor["width"])
-                    case Keys.RIGHT:
-                        SCREENSHOT_REGION["top"] += 5
-                        print(SCREENSHOT_REGION["left"] / monitor["width"])
+            t = (frame_count - 1) / FPS
+            x = (scale * np.sin(w * t + phi)).sum() / N
+            move_mouse(x, 0)
 
-                frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
+            # Capture frame
+            frames.append(np.asarray(sct.grab(SCREENSHOT_REGION)))
 
-                frame = cv2.rectangle(
-                    frame,
-                    (SCREENSHOT_REGION["left"], SCREENSHOT_REGION["top"]),
-                    (
-                        SCREENSHOT_REGION["left"] + SCREENSHOT_REGION["width"],
-                        SCREENSHOT_REGION["top"] + SCREENSHOT_REGION["height"],
-                    ),
-                    (0, 0, 255),
-                    2,
-                )
+            frame_count += 1
 
-                frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
-                cv2.imshow("PREVIEW", frame)
-
-            frame_count = 1
-            t0 = time.perf_counter()
-            try:
-                # Capture frames with precise timing
-                for _ in range(PRELOADED_FRAMES):
-                    next_frame_time = (frame_count) / FPS
-
-                    t = (frame_count - 1) / FPS
-                    x = (scale * np.sin(w * t + phi)).sum() / N
-                    await move_mouse(x, 0)
-
-                    frame_count += 1
-
-                    while (time.perf_counter() - t0) < next_frame_time:
-                        await asyncio.sleep(0)
-
-                t1 = 0
-                for _ in range(TOTAL_FRAMES):
-                    if t1 != 0:
-                        dt.append(time.perf_counter() - t1)
-                    t1 = time.perf_counter()
-
-                    t = (frame_count - 1) / FPS
-                    x = (scale * np.sin(w * t + phi)).sum() / N
-                    await move_mouse(x, 0)
-
-                    # Capture frame
-                    frames.append(np.asarray(sct.grab(SCREENSHOT_REGION)))
-
-                    frame_count += 1
-
-                    # Maintain precise FPS
-                    next_frame_time = (frame_count) / FPS
-                    while (time.perf_counter() - t0) < next_frame_time:
-                        # This is a trick. Sleeps/waits will always yield
-                        # control, even if the value is 0.
-                        # This yields control back to the browser for one
-                        # update cycle to allow it to continue working.
-                        await asyncio.sleep(0)
-
-            finally:
-                await browser.close()
+            # Maintain precise FPS
+            next_frame_time = (frame_count) / FPS
+            while (time.perf_counter() - t0) < next_frame_time:
+                time.sleep(0)
 
     process_frames(frames)
     np.savetxt("dt.npy", dt)
-    print(np.mean(dt))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
