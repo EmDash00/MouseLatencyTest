@@ -157,15 +157,13 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
 
 def main():
     dt = deque()
-    captures = 0
 
     is_running = True
+    semaphore = threading.Semaphore(value=0)
 
     def capture():
-        nonlocal captures
         while is_running:
-            while captures > 0:
-                captures -= 1
+                semaphore.acquire()
                 frames.append(sct.grab(SCREENSHOT_REGION))
             time.sleep(0)
 
@@ -271,7 +269,7 @@ def main():
             move_mouse(x, 0)
 
             # Capture frame
-            captures += 1
+            semaphore.release()
 
             frame_count += 1
 
@@ -279,7 +277,7 @@ def main():
             # Maintain precise FPS
             next_frame_time = frame_count / FPS
             while (time.perf_counter() - t0) < next_frame_time:
-                time.sleep(0)
+                pass
 
         is_running = False
         thread.join()
