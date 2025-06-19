@@ -157,6 +157,21 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
 
 def main():
     dt = deque()
+    captures = 0
+
+    is_running = True
+
+    def capture():
+        nonlocal captures
+        while is_running:
+            while captures > 0:
+                captures -= 1
+                frames.append(sct.grab(SCREENSHOT_REGION))
+            time.sleep(0)
+
+    thread = threading.Thread(target=capture)
+    thread.start()
+
     with mss.mss() as sct:
         monitor_idx, monitor = select_monitor(sct)
         print("Calculated resolution:", monitor)
@@ -256,7 +271,7 @@ def main():
             move_mouse(x, 0)
 
             # Capture frame
-            frames.append(sct.grab(SCREENSHOT_REGION))
+            captures += 1
 
             frame_count += 1
 
@@ -264,7 +279,10 @@ def main():
             # Maintain precise FPS
             next_frame_time = frame_count / FPS
             while (time.perf_counter() - t0) < next_frame_time:
-                pass
+                time.sleep(0)
+
+        is_running = False
+        thread.join()
 
     process_frames(frames)
     print(np.mean(dt))
