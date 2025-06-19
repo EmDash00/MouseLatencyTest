@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 
-import asyncio
-import textwrap
+"""
+System latency measurement tool that analyzes the delay between input signals
+and on-screen response using frequency domain analysis.
+
+Methodology:
+1. Generates a broad band signal at, sampled at 0.1 Hz intervals
+2. Captures screen response
+3. Computes group delay via FFT analysis
+"""
+
 import threading
 import time
 from collections import deque
@@ -14,19 +22,10 @@ import mss.tools
 import numpy as np
 import pyautogui
 from cv2.typing import MatLike
-from mss.base import MSSBase
 from mss.models import Monitor
 from scipy.fft import rfft, rfftfreq
 
 from util import find_closest
-
-f0 = 0.1
-N = int(1 / f0) + 1
-w = np.arange(N) * f0 * tau
-phi = np.linspace(0, 0.25 * tau, N)
-scale = 0.03 / 0.6904998132600674
-frame_count = 1
-PRELOADED_FRAMES = 20
 
 
 class Keys(IntEnum):
@@ -43,28 +42,48 @@ class Keys(IntEnum):
 
 
 # Configuration
+BASE_FREQUENCY = 0.1
+NUM_SAMPLES = int(1 / BASE_FREQUENCY) + 1
+FREQUENCIES = np.arange(NUM_SAMPLES) * BASE_FREQUENCY * tau
+PHASES = np.linspace(0, 0.25 * tau, NUM_SAMPLES)
+OUTPUT_SCALE = 0.03
+NORMALIZATION_FACTOR = 0.6904998132600674
+AMPLITUDE = OUTPUT_SCALE / NORMALIZATION_FACTOR
+frame_count = 1
+NUM_PRELOADED_FRAMES = 20
+
 FPS = 60
-DURATION_SEC = 3 / f0
+NUM_PERIODS = 3  # Record 3 full periods of the lowest frequency
+DURATION_SEC = NUM_PRELOADED_FRAMES / BASE_FREQUENCY
 TOTAL_FRAMES = int(FPS * DURATION_SEC) + 1
 
-t = np.arange(PRELOADED_FRAMES, TOTAL_FRAMES + PRELOADED_FRAMES) / FPS
-x = w[:, np.newaxis] * t + phi[:, np.newaxis]
-u = scale * np.sin(x).sum(axis=0) / N
-fft_freqs = rfftfreq(TOTAL_FRAMES, 1 / FPS)
-fi = find_closest(fft_freqs, f0 * np.arange(1, N))
-f = fft_freqs[fi]
-U = rfft(u)[fi]
-
-t0 = time.perf_counter()
-frame_count = 0
-frames = deque()
-
 # Crop the region we record to reduce latency and processing work.
-WIDTH_CROP_RATIO = 0.031
-HEIGHT_CROP_RATIO = 0.011
+BUFFER_AMOUNT = 0.01
+WIDTH_CROP_RATIO = OUTPUT_SCALE + BUFFER_AMOUNT
+HEIGHT_CROP_RATIO = 0.01 + BUFFER_AMOUNT
+
+# Globals
+
+capture_semaphore = threading.Semaphore(value=0)
+frame_deltas = deque()
+capture_request_times = deque()
+
+t = np.arange(NUM_PRELOADED_FRAMES, TOTAL_FRAMES + NUM_PRELOADED_FRAMES) / FPS
+x = FREQUENCIES[:, np.newaxis] * t + PHASES[:, np.newaxis]
+input_signal = AMPLITUDE * np.sin(x).sum(axis=0) / NUM_SAMPLES
+fft_freqs = rfftfreq(TOTAL_FRAMES, 1 / FPS)
+input_frequency_indicies = find_closest(
+    fft_freqs, BASE_FREQUENCY * np.arange(1, NUM_SAMPLES)
+)
+input_frequencies = fft_freqs[input_frequency_indicies]
+input_signal_fft = rfft(input_signal)[input_frequency_indicies]
 
 
 def process_frames(frames: deque[MatLike]):
+    """
+    Takes a set of frames and calculates the group delay from them.
+    """
+
     centers = np.empty(len(frames))
     height, width = np.asarray(frames[0]).shape[:2]
     buffer = np.empty((height, width), dtype=np.uint8)
@@ -76,131 +95,174 @@ def process_frames(frames: deque[MatLike]):
         center_px = M["m10"] / M["m00"]
         centers[i] = WIDTH_CROP_RATIO * (2 * center_px / width - 1)
 
-    Y = rfft(centers)[fi]
-    H_yu = Y / U  # type: ignore
-    H_yu_phase = np.angle(H_yu)
-    group_delay, b = np.polyfit(f * tau, H_yu_phase, deg=1)
+    output_signal_fft = rfft(centers)[input_frequency_indicies]
 
-    r_squared = 1 - ((H_yu_phase - (group_delay * f * tau + b)) ** 2).sum() / (
-        H_yu_phase.var() * (H_yu_phase.size - 1)
-    )
+    # Compute transfer function of input to output.
+    # Input is typically denoted u and output y, so H_yu is the transfer
+    # function
+
+    H_yu = output_signal_fft / input_signal_fft  # type: ignore
+
+    # Compute the phase delay
+    H_yu_phase = np.angle(H_yu)
+
+    # The group delay is the derivative of the phase delay and represents
+    # the time delay for that frequency component. Constant time delay
+    # leads to constant group delay for all frequencies (linear phase)
+    # Fit a line to this. Any y intercept corresponds to start timing
+    # inconsistency.
+    group_delay, b = np.polyfit(input_frequencies * tau, H_yu_phase, deg=1)
+
+    # Compute the r^2 value for the fit
+    r_squared = 1 - (
+        (H_yu_phase - (group_delay * input_frequencies * tau + b)) ** 2
+    ).sum() / (H_yu_phase.var() * (H_yu_phase.size - 1))
 
     print(f"Calculated group delay: {-group_delay:.6f} seconds (r^2 = {r_squared:.6f})")
     np.savetxt("capture.npy", centers)
 
 
-def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
+def select_monitor() -> tuple[int, Monitor]:
     """
     Displays labeled screenshots of several monitors. The user is
     prompted to select one.
     """
-    selected_monitor_index = 0
-
-    def get_monitor_selection():
-        nonlocal selected_monitor_index
-
-        while True:
-            print(
-                "Pick the monitor you will play the game on. Previews are "
-                f"shown above [1-{len(sct.monitors) - 1}]: ",
-                end="",
-            )
-            selection = input()
-
-            if len(selection) > 1:
-                print("Please input a monitor number.")
-                continue
-
-            if not selection.isdigit():
-                print("Please input a monitor number.")
-                continue
-
-            index = int(selection)
-            if index <= 0 or index >= len(sct.monitors):
-                print("Invalid monitor number.")
-                continue
-
-            selected_monitor_index = index
-
-            break
-
-    if len(sct.monitors) == 2:
-        return 1, sct.monitors[1]
-
-    # Skip the first monitor as that's the whole screen (all monitors)
-    for i, monitor in enumerate(sct.monitors[1:]):
-        screenshot = np.array(sct.grab(monitor))
-
-        # Resize the screenshots to be smallish while maintaining aspect ratio
-        aspect_ratio = screenshot.shape[1] / screenshot.shape[0]
-        resize_height = 300
-        resize_width = int(resize_height * aspect_ratio)
-        cv2.imshow(
-            f"Monitor {i + 1}",
-            cv2.resize(
-                screenshot, (resize_width, resize_height), interpolation=cv2.INTER_AREA
-            ),
-        )
-
-    thread = threading.Thread(target=get_monitor_selection)
-    thread.start()
-
-    # Keep the windows open until the monitor is selected
-    while selected_monitor_index == 0:
-        # sleep for 20 ms at a time by waiting for a key with timeout of 20 ms
-        cv2.waitKey(20)
-
-    cv2.destroyAllWindows()
-
-    return selected_monitor_index, sct.monitors[selected_monitor_index]
-
-
-def main():
-    dt = deque()
-    t2 = deque()
-    dt2 = deque()
-
-    is_running = True
-    semaphore = threading.Semaphore(value=0)
-
-    def capture():
-        with mss.mss() as sct:
-            while is_running:
-                semaphore.acquire()
-                if is_running:
-                    dt2.append(time.perf_counter() - t2.popleft())
-                    frames.append(sct.grab(SCREENSHOT_REGION))
-
-    thread = threading.Thread(target=capture)
-    thread.start()
 
     with mss.mss() as sct:
-        monitor_idx, monitor = select_monitor(sct)
-        print("Calculated resolution:", monitor)
+        selected_monitor_index = 0
 
-        def click_mouse(x, y):
-            px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
-            py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
-            pyautogui.click(px, py)
+        def get_monitor_selection():
+            nonlocal selected_monitor_index
 
-        def move_mouse(x, y):
-            px = 0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"]
-            py = 0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"]
-            pyautogui.moveTo(px, py, _pause=False)
+            while True:
+                print(
+                    "Pick the monitor you will play the game on. Previews are "
+                    f"shown above [1-{len(sct.monitors) - 1}]: ",
+                    end="",
+                )
+                selection = input()
 
-        SCREENSHOT_REGION = {
-            "top": int(
-                monitor["top"] + monitor["height"] * 0.5 * (1 - HEIGHT_CROP_RATIO)
-            ),
-            "left": int(
-                monitor["left"] + monitor["width"] * 0.5 * (1 - WIDTH_CROP_RATIO)
-            ),
-            "height": int(monitor["height"] * HEIGHT_CROP_RATIO),
-            "width": int(monitor["width"] * WIDTH_CROP_RATIO),
-        }
+                if len(selection) > 1:
+                    print("Please input a monitor number.")
+                    continue
 
+                if not selection.isdigit():
+                    print("Please input a monitor number.")
+                    continue
+
+                index = int(selection)
+                if index <= 0 or index >= len(sct.monitors):
+                    print("Invalid monitor number.")
+                    continue
+
+                selected_monitor_index = index
+
+                break
+
+        if len(sct.monitors) == 2:
+            return 1, sct.monitors[1]
+
+        # Skip the first monitor as that's the whole screen (all monitors)
+        for i, monitor in enumerate(sct.monitors[1:]):
+            screenshot = np.array(sct.grab(monitor))
+
+            # Resize the screenshots to be smallish while maintaining aspect ratio
+            aspect_ratio = screenshot.shape[1] / screenshot.shape[0]
+            resize_height = 300
+            resize_width = int(resize_height * aspect_ratio)
+            cv2.imshow(
+                f"Monitor {i + 1}",
+                cv2.resize(
+                    screenshot,
+                    (resize_width, resize_height),
+                    interpolation=cv2.INTER_AREA,
+                ),
+            )
+
+        thread = threading.Thread(target=get_monitor_selection)
+        thread.start()
+
+        # Keep the windows open until the monitor is selected
+        while selected_monitor_index == 0:
+            # sleep for 20 ms at a time by waiting for a key with timeout of 20 ms
+            cv2.waitKey(20)
+
+        cv2.destroyAllWindows()
+
+        return selected_monitor_index, sct.monitors[selected_monitor_index]
+
+
+def normalized_coordinates_to_pixels(
+    x: float, y: float, monitor: Monitor
+) -> tuple[int, int]:
+    px = int(0.5 * (monitor["width"] - 1) * (x + 1) + monitor["left"])
+    py = int(0.5 * (monitor["height"] - 1) * (y + 1) + monitor["top"])
+
+    return (px, py)
+
+
+def spin(t: float):
+    """
+    Busy waits for t seconds.
+
+
+    Parameters
+    ----------
+    t : float
+        The number of seconds to busy wait.
+    """
+
+    t0 = time.perf_counter()
+
+    while time.perf_counter() - t0 < t:
+        pass
+
+
+def nap(t: float, sleep_for=0):
+    """
+    Waits for `t` seconds. Sleeps until the last millisecond of the wait
+    period `t`. After the sleep period, checks to see if period `t` elaspsed
+    `sleep_for` seconds.
+
+
+    Parameters
+    ----------
+    t : float
+        The number of seconds to wait.
+
+    sleep_for : float, default=0
+        The number of seconds to sleep between checks to see if t seconds
+        have passed.
+
+
+    Notes
+    -----
+    `time.sleep(0)` forces an immediate context switch. Context will switch
+    back as soon as possible.
+    """
+
+    t0 = time.perf_counter()
+
+    # Sleep until the last millisecond
+    sleep_time = max(t - 0.001, 0)
+    if sleep_time > 0:
+        time.sleep(sleep_time)
+
+    while time.perf_counter() - t0 < t:
+        time.sleep(sleep_for)
+
+
+def get_screenshot_region(monitor: Monitor, monitor_idx: int):
+    SCREENSHOT_REGION = {
+        "top": int(monitor["top"] + monitor["height"] * 0.5 * (1 - HEIGHT_CROP_RATIO)),
+        "left": int(monitor["left"] + monitor["width"] * 0.5 * (1 - WIDTH_CROP_RATIO)),
+        "height": int(monitor["height"] * HEIGHT_CROP_RATIO),
+        "width": int(monitor["width"] * WIDTH_CROP_RATIO),
+    }
+
+    with mss.mss() as sct:
         frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
-        display_scale = frame.shape[1] / monitor["width"]
+        display_scale = int(frame.shape[1] / monitor["width"])
         print(display_scale)
         while True:
             match cv2.waitKey(40) & 0xFF:
@@ -217,82 +279,129 @@ def main():
 
             frame = np.asarray(sct.grab(sct.monitors[monitor_idx]))
 
+            x0 = SCREENSHOT_REGION["left"] - monitor["left"]
+            y0 = SCREENSHOT_REGION["top"] - monitor["top"]
             frame = cv2.rectangle(
                 frame,
+                (display_scale * x0, display_scale * y0),
                 (
-                    int((SCREENSHOT_REGION["left"] - monitor["left"]) * display_scale),
-                    int((SCREENSHOT_REGION["top"] - monitor["top"]) * display_scale),
+                    display_scale * (x0 + SCREENSHOT_REGION["width"]),
+                    display_scale * (y0 + SCREENSHOT_REGION["height"]),
                 ),
-                (
-                    int(
-                        display_scale
-                        * ((SCREENSHOT_REGION["left"] - monitor["left"]) + SCREENSHOT_REGION["width"])
-                    ),
-                    int(
-                        display_scale
-                        * ((SCREENSHOT_REGION["top"] - monitor["top"]) + SCREENSHOT_REGION["height"])
-                    ),
-                ),
-                (0, 0, 255),
-                2,
+                color=(0, 0, 255),  # red
+                thickness=2,  # 2 px thick line
             )
 
-            ratio = monitor["height"] / monitor["width"]
+            aspect_ratio = monitor["width"] / monitor["height"]
+
+            # Show a 600 px preview
             frame = cv2.resize(
                 frame,
-                (600, int(600 * ratio)),
+                (600, int(600 / aspect_ratio)),
                 interpolation=cv2.INTER_AREA,
             )
             cv2.imshow("Preview", frame)
 
         cv2.destroyWindow("Preview")
-        click_mouse(0, 0)
 
-        frame_count = 1
-        t0 = time.perf_counter()
-        # Capture frames with precise timing
+        return SCREENSHOT_REGION
 
-        for _ in range(PRELOADED_FRAMES):
-            next_frame_time = (frame_count) / FPS
 
-            t = (frame_count - 1) / FPS
-            x = (scale * np.sin(w * t + phi)).sum() / N
-            move_mouse(x, 0)
+def preload_frames(num_preload_frames: int, monitor: Monitor):
+    frame_count = 0
+    for _ in range(num_preload_frames):
+        next_frame_time = (frame_count) / FPS
 
-            frame_count += 1
+        t = (frame_count - 1) / FPS
+        x = (AMPLITUDE * np.sin(FREQUENCIES * t + PHASES)).sum() / NUM_SAMPLES
 
-            while (time.perf_counter() - t0) < next_frame_time:
-                pass
+        pyautogui.moveTo(
+            *normalized_coordinates_to_pixels(x, 0, monitor),
+            duration=0,
+            _pause=False,
+        )
 
-        t1 = 0
-        for _ in range(TOTAL_FRAMES):
-            t1 = time.perf_counter()
-            t = (frame_count - 1) / FPS
-            x = (scale * np.sin(w * t + phi)).sum() / N
+        frame_count += 1
+        spin(next_frame_time - time.perf_counter())
 
-            move_mouse(x, 0)
 
-            # Capture frame
-            t2.append(time.perf_counter())
-            semaphore.release()
+def run_latency_test(num_preload_frames: int, total_frames: int, monitor: Monitor):
+    time_frame_begin = 0
+    frame_count = num_preload_frames + 1
 
-            frame_count += 1
+    for _ in range(total_frames):
+        time_frame_begin = time.perf_counter()
+        t = (frame_count - 1) / FPS
+        x = (AMPLITUDE * np.sin(FREQUENCIES * t + PHASES)).sum() / NUM_SAMPLES
 
-            # Maintain precise FPS
-            next_frame_time = frame_count / FPS
-            while (time.perf_counter() - t0) < next_frame_time:
-                time.sleep(0)
-            dt.append(time.perf_counter() - t1)
+        pyautogui.moveTo(
+            *normalized_coordinates_to_pixels(x, 0, monitor),
+            duration=0,
+            _pause=False,
+        )
 
-        is_running = False
-        semaphore.release()
-        thread.join()
+        # Capture frame
+        capture_request_times.append(time.perf_counter())
+        capture_semaphore.release()
 
+        frame_count += 1
+
+        # Maintain precise FPS
+        next_frame_time = frame_count / FPS
+
+        nap(next_frame_time - time.perf_counter())
+        frame_deltas.append(time.perf_counter() - time_frame_begin)
+
+
+def main():
+    capture_latency = deque()
+    frames = deque()
+
+    is_running = True
+
+    monitor_idx, monitor = select_monitor()
+    print("Calculated resolution:", monitor)
+
+    SCREENSHOT_REGION = get_screenshot_region(monitor, monitor_idx)
+
+    # Create a thread to capture frames.
+    def capture():
+        with mss.mss() as sct:
+            while is_running:
+                # Sleep until a capture is requested.
+                capture_semaphore.acquire()
+
+                # If we are still running, capture a screenshot
+                if is_running:
+                    capture_latency.append(
+                        time.perf_counter() - capture_request_times.popleft()
+                    )
+                    frames.append(sct.grab(SCREENSHOT_REGION))
+
+    thread = threading.Thread(target=capture)
+    thread.start()
+
+    # Click on window the game is on to focus it.
+    pyautogui.click(
+        *normalized_coordinates_to_pixels(0, 0, monitor),
+    )
+
+    # Give a 20 frame head start to avoid "jumps" in the data.
+    preload_frames(NUM_PRELOADED_FRAMES, monitor)
+
+    run_latency_test(NUM_PRELOADED_FRAMES, TOTAL_FRAMES, monitor)
+
+    # Cleanup
+    is_running = False
+    capture_semaphore.release()
+    thread.join()
+
+    # Compute and log results.
     process_frames(frames)
-    print(np.mean(dt))
-    print(np.mean(dt2))
-    np.savetxt("dt.npy", dt)
-    np.savetxt("dt2.npy", dt2)
+    print("Mean frame delta:", np.mean(frame_deltas))
+    print("Mean capture latency:", np.mean(capture_latency))
+    np.savetxt("dt.npy", frame_deltas)
+    np.savetxt("dt2.npy", capture_latency)
 
 
 if __name__ == "__main__":
