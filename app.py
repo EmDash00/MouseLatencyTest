@@ -165,7 +165,6 @@ def main():
         while is_running:
                 semaphore.acquire()
                 frames.append(sct.grab(SCREENSHOT_REGION))
-            time.sleep(0)
 
     thread = threading.Thread(target=capture)
     thread.start()
