@@ -157,14 +157,19 @@ def select_monitor(sct: MSSBase) -> tuple[int, Monitor]:
 
 def main():
     dt = deque()
+    t2 = deque()
+    dt2 = deque()
 
     is_running = True
     semaphore = threading.Semaphore(value=0)
 
     def capture():
-        while is_running:
+        with mss.mss() as sct:
+            while is_running:
                 semaphore.acquire()
-                frames.append(sct.grab(SCREENSHOT_REGION))
+                if is_running:
+                    dt2.append(time.perf_counter() - t2.popleft())
+                    frames.append(sct.grab(SCREENSHOT_REGION))
 
     thread = threading.Thread(target=capture)
     thread.start()
@@ -268,22 +273,26 @@ def main():
             move_mouse(x, 0)
 
             # Capture frame
+            t2.append(time.perf_counter())
             semaphore.release()
 
             frame_count += 1
 
-            dt.append(time.perf_counter() - t1)
             # Maintain precise FPS
             next_frame_time = frame_count / FPS
             while (time.perf_counter() - t0) < next_frame_time:
-                pass
+                time.sleep(0)
+            dt.append(time.perf_counter() - t1)
 
         is_running = False
+        semaphore.release()
         thread.join()
 
     process_frames(frames)
     print(np.mean(dt))
+    print(np.mean(dt2))
     np.savetxt("dt.npy", dt)
+    np.savetxt("dt2.npy", dt2)
 
 
 if __name__ == "__main__":
