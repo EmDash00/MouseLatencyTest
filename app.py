@@ -218,17 +218,17 @@ def main():
             frame = cv2.rectangle(
                 frame,
                 (
-                    int(SCREENSHOT_REGION["left"] * display_scale),
-                    int(SCREENSHOT_REGION["top"] * display_scale),
+                    int((SCREENSHOT_REGION["left"] - monitor["left"]) * display_scale),
+                    int((SCREENSHOT_REGION["top"] - monitor["top"]) * display_scale),
                 ),
                 (
                     int(
                         display_scale
-                        * (SCREENSHOT_REGION["left"] + SCREENSHOT_REGION["width"])
+                        * ((SCREENSHOT_REGION["left"] - monitor["left"]) + SCREENSHOT_REGION["width"])
                     ),
                     int(
                         display_scale
-                        * (SCREENSHOT_REGION["top"] + SCREENSHOT_REGION["height"])
+                        * ((SCREENSHOT_REGION["top"] - monitor["top"]) + SCREENSHOT_REGION["height"])
                     ),
                 ),
                 (0, 0, 255),
