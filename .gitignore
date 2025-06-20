@@ -139,3 +139,5 @@ wheels/
 
 # Virtual environments
 .venv
+*.npy
+app.spec

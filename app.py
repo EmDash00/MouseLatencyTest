@@ -25,7 +25,7 @@ from cv2.typing import MatLike
 from mss.models import Monitor
 from scipy.fft import rfft, rfftfreq
 
-from util import find_closest
+from util import find_closest, precision_sleep, spin
 
 
 class Keys(IntEnum):
@@ -54,7 +54,7 @@ NUM_PRELOADED_FRAMES = 20
 
 FPS = 60
 NUM_PERIODS = 3  # Record 3 full periods of the lowest frequency
-DURATION_SEC = NUM_PRELOADED_FRAMES / BASE_FREQUENCY
+DURATION_SEC = NUM_PERIODS / BASE_FREQUENCY
 TOTAL_FRAMES = int(FPS * DURATION_SEC) + 1
 
 # Crop the region we record to reduce latency and processing work.
@@ -93,7 +93,7 @@ def process_frames(frames: deque[MatLike]):
         cv2.threshold(buffer, 200, 255, cv2.THRESH_BINARY, dst=buffer)
         M = cv2.moments(buffer, binaryImage=True)
         center_px = M["m10"] / M["m00"]
-        centers[i] = WIDTH_CROP_RATIO * (2 * center_px / width - 1)
+        centers[i] = OUTPUT_SCALE * (2 * center_px / width - 1)
 
     output_signal_fft = rfft(centers)[input_frequency_indicies]
 
@@ -201,57 +201,6 @@ def normalized_coordinates_to_pixels(
     return (px, py)
 
 
-def spin(t: float):
-    """
-    Busy waits for t seconds.
-
-
-    Parameters
-    ----------
-    t : float
-        The number of seconds to busy wait.
-    """
-
-    t0 = time.perf_counter()
-
-    while time.perf_counter() - t0 < t:
-        pass
-
-
-def nap(t: float, sleep_for=0):
-    """
-    Waits for `t` seconds. Sleeps until the last millisecond of the wait
-    period `t`. After the sleep period, checks to see if period `t` elaspsed
-    `sleep_for` seconds.
-
-
-    Parameters
-    ----------
-    t : float
-        The number of seconds to wait.
-
-    sleep_for : float, default=0
-        The number of seconds to sleep between checks to see if t seconds
-        have passed.
-
-
-    Notes
-    -----
-    `time.sleep(0)` forces an immediate context switch. Context will switch
-    back as soon as possible.
-    """
-
-    t0 = time.perf_counter()
-
-    # Sleep until the last millisecond
-    sleep_time = max(t - 0.001, 0)
-    if sleep_time > 0:
-        time.sleep(sleep_time)
-
-    while time.perf_counter() - t0 < t:
-        time.sleep(sleep_for)
-
-
 def get_screenshot_region(monitor: Monitor, monitor_idx: int):
     SCREENSHOT_REGION = {
         "top": int(monitor["top"] + monitor["height"] * 0.5 * (1 - HEIGHT_CROP_RATIO)),
@@ -307,10 +256,10 @@ def get_screenshot_region(monitor: Monitor, monitor_idx: int):
         return SCREENSHOT_REGION
 
 
-def preload_frames(num_preload_frames: int, monitor: Monitor):
+def preload_frames(t0: float, num_preload_frames: int, monitor: Monitor):
     frame_count = 0
     for _ in range(num_preload_frames):
-        next_frame_time = (frame_count) / FPS
+        next_frame_time = (frame_count) / FPS + t0
 
         t = (frame_count - 1) / FPS
         x = (AMPLITUDE * np.sin(FREQUENCIES * t + PHASES)).sum() / NUM_SAMPLES
@@ -325,9 +274,12 @@ def preload_frames(num_preload_frames: int, monitor: Monitor):
         spin(next_frame_time - time.perf_counter())
 
 
-def run_latency_test(num_preload_frames: int, total_frames: int, monitor: Monitor):
+def run_latency_test(
+    t0: float, num_preload_frames: int, total_frames: int, monitor: Monitor
+):
     time_frame_begin = 0
     frame_count = num_preload_frames + 1
+    print(total_frames)
 
     for _ in range(total_frames):
         time_frame_begin = time.perf_counter()
@@ -347,10 +299,13 @@ def run_latency_test(num_preload_frames: int, total_frames: int, monitor: Monito
         frame_count += 1
 
         # Maintain precise FPS
-        next_frame_time = frame_count / FPS
+        next_frame_time = frame_count / FPS + t0
 
-        nap(next_frame_time - time.perf_counter())
-        frame_deltas.append(time.perf_counter() - time_frame_begin)
+        precision_sleep(next_frame_time - time.perf_counter())
+        frame_delta = time.perf_counter() - time_frame_begin
+        frame_deltas.append(frame_delta)
+        # print(frame_delta)
+        # print(frame_count)
 
 
 def main():
@@ -386,10 +341,11 @@ def main():
         *normalized_coordinates_to_pixels(0, 0, monitor),
     )
 
+    t0 = time.perf_counter()
     # Give a 20 frame head start to avoid "jumps" in the data.
-    preload_frames(NUM_PRELOADED_FRAMES, monitor)
+    preload_frames(t0, NUM_PRELOADED_FRAMES, monitor)
 
-    run_latency_test(NUM_PRELOADED_FRAMES, TOTAL_FRAMES, monitor)
+    run_latency_test(t0, NUM_PRELOADED_FRAMES, TOTAL_FRAMES, monitor)
 
     # Cleanup
     is_running = False
